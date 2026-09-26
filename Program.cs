@@ -1,81 +1,52 @@
-// havCurCtr
-//
-// ABOUT
-//
-// A WinForms-based background app that registers a global hotkey and centers the mouse cursor on the primary monitor when pressed.
-//
-// REVISION HISTORY
-//
-// v1.0 (2025-08-24) - First release.
-//
-// LICENSE
-//
-// MIT License
-//
-// Copyright (c) 2025 René Nicolaus
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// SPDX-License-Identifier: MIT
 
 using System.Reflection;
 using System.Runtime.InteropServices;
 
 internal static class Program
 {
-    /// <summary>
-    /// The main entry point for the application.
-    /// </summary>
-    [STAThread]
-    private static void Main()
-    {
-        TryEnablePerMonitorV2Dpi();
-        ApplicationConfiguration.Initialize();
-        Application.Run(new HotkeyAppContext());
-    }
+  /// <summary>
+  /// The main entry point for the application.
+  /// </summary>
+  [STAThread]
+  static void Main()
+  {
+    TryEnablePerMonitorV2Dpi();
+    ApplicationConfiguration.Initialize();
+    SettingsManager.Load();
+    LocalizationManager.Initialize(SettingsManager.CurrentAppSettings.Language);
+    using var context = new HotkeyAppContext();
+    Application.Run(context);
+  }
 
-    private static void TryEnablePerMonitorV2Dpi()
+  static void TryEnablePerMonitorV2Dpi()
+  {
+    try
     {
-        try
-        {
-            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-        }
-        catch
-        {
-            Application.SetHighDpiMode(HighDpiMode.SystemAware);
-        }
+      Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
     }
+    catch
+    {
+      Application.SetHighDpiMode(HighDpiMode.SystemAware);
+    }
+  }
 }
 
 internal static partial class NativeMethods
 {
-    private const string _user32 = "user32.dll";
+  private const string _user32 = "user32.dll";
 
-    [LibraryImport(_user32, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+  [LibraryImport(_user32, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  internal static partial bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
-    [LibraryImport(_user32, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool UnregisterHotKey(IntPtr hWnd, int id);
+  [LibraryImport(_user32, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  internal static partial bool UnregisterHotKey(IntPtr hWnd, int id);
 
-    [LibraryImport(_user32, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool SetCursorPos(int X, int Y);
+  [LibraryImport(_user32, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  internal static partial bool SetCursorPos(int X, int Y);
 }
 
 /// <summary>
@@ -83,145 +54,309 @@ internal static partial class NativeMethods
 /// </summary>
 internal sealed class HotkeyAppContext : ApplicationContext
 {
-    private readonly string _title = "havCurCtr by René \"Havoc\" Nicolaus";
-    private readonly string _version = "1.0";
-    private readonly string _hotkey = "Win + Shift + C";
+  private readonly string _title = "havCurCtr";
+  private readonly string _version = "1.1.0.0";
+  private static string CurrentHotkey => HotkeySettings.Format(
+      SettingsManager.CurrentAppSettings.HotkeyModifiers, SettingsManager.CurrentAppSettings.HotkeyKey);
 
-    private readonly MessageWindow _messageWindow;
-    private readonly NotifyIcon? _trayIcon;
-    private readonly int _hotkeyId = 1;
+  private readonly MessageWindow _messageWindow;
+  private readonly NotifyIcon? _trayIcon;
+  private const int HotkeyId = 1;
+  private const uint MOD_NOREPEAT = 0x4000;
+  private bool _hotkeyRegistered;
+  private bool _editingHotkey;
+  private bool _exiting;
+  private int _registrationError;
 
-    // Hotkey: Win + Shift + C
-    private const uint MOD_SHIFT = 0x0004;
-    private const uint MOD_WIN = 0x0008;
+  public HotkeyAppContext()
+  {
+    _messageWindow = new MessageWindow();
+    _messageWindow.HotkeyPressed += OnHotkeyPressed;
 
-    private const uint HOTKEY_MODIFIERS = MOD_WIN | MOD_SHIFT; // Win + Shift
-    private const Keys HOTKEY_VK = Keys.C; // C = Center
-
-    public HotkeyAppContext()
+    _trayIcon = new NotifyIcon
     {
-        _messageWindow = new MessageWindow();
-        _messageWindow.HotkeyPressed += OnHotkeyPressed;
+      Text = "havCurCtr",
+      Icon = LoadEmbeddedIconOrDefault("havCurCtr.ico"),
+      Visible = true,
+      ContextMenuStrip = BuildMenu()
+    };
 
-        if (!NativeMethods.RegisterHotKey(_messageWindow.Handle, _hotkeyId, HOTKEY_MODIFIERS, (uint)HOTKEY_VK))
-        {
-            var error = Marshal.GetLastWin32Error();
-            MessageBox.Show($"Failed to register hotkey (Error: {error}). Another app may be using it.", _title, MessageBoxButtons.OK, MessageBoxIcon.Error);
-            ExitThread();
-            return;
-        }
+    UpdateTrayText();
 
-        _trayIcon = new NotifyIcon
-        {
-            Text = $"{_title} - {_hotkey}",
-            Icon = LoadEmbeddedIconOrDefault("havCurCtr.ico"),
-            Visible = true,
-            ContextMenuStrip = BuildMenu()
-        };
+    var settings = SettingsManager.CurrentAppSettings;
+    if (!TryRegisterHotkey(settings.HotkeyModifiers, settings.HotkeyKey))
+    {
+      ShowRegistrationError();
+    }
+  }
+
+  private ContextMenuStrip BuildMenu()
+  {
+    var menu = new ContextMenuStrip();
+    var about = new ToolStripMenuItem(LocalizationManager.Get("About"), null, (_, __) =>
+        MessageBox.Show($"{_title}\n" +
+            $"{LocalizationManager.Get("AboutVersion")} {_version}\n" +
+            $"Copyright © 2025-2026 René Nicolaus\n\n" +
+            $"{LocalizationManager.Get("AboutDescription")}\n\n" +
+            $"{LocalizationManager.Get("AboutHotkey")}: {CurrentHotkey}",
+            LocalizationManager.Get("About"), MessageBoxButtons.OK, MessageBoxIcon.Information));
+    var exit = new ToolStripMenuItem(LocalizationManager.Get("Exit"), null, (_, __) => ExitThread());
+    menu.Items.Add(LocalizationManager.Get("ChangeHotkey"), null, (_, __) => ShowHotkeySettings());
+    menu.Items.Add(LanguageMenu.Build(ChangeLanguage));
+    menu.Items.Add(new ToolStripSeparator());
+    menu.Items.Add(about);
+    menu.Items.Add(new ToolStripSeparator());
+    menu.Items.Add(exit);
+
+    return menu;
+  }
+
+  private void ChangeLanguage(string? language)
+  {
+    if (_editingHotkey || _exiting || SettingsManager.CurrentAppSettings.Language == language)
+    {
+      return;
     }
 
-    private ContextMenuStrip BuildMenu()
+    var updated = SettingsManager.CurrentAppSettings.Copy();
+    updated.Language = language;
+    if (!SettingsManager.TrySave(updated, out var error))
     {
-        var menu = new ContextMenuStrip();
-        var about = new ToolStripMenuItem("About", null, (_, __) => MessageBox.Show($"Version {_version}\n\nCenters the mouse cursor on the primary monitor.\n\nHotkey: {_hotkey}", _title, MessageBoxButtons.OK, MessageBoxIcon.Information));
-        var exit = new ToolStripMenuItem("Exit", null, (_, __) => ExitThread());
-        menu.Items.Add(about);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(exit);
-        return menu;
+      MessageBox.Show(LocalizationManager.Get("LanguageSaveFailed", error), _title,
+          MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+      return;
     }
 
-    protected override void ExitThreadCore()
+    LocalizationManager.Initialize(language);
+    var oldMenu = _trayIcon!.ContextMenuStrip;
+    oldMenu?.Close();
+    _trayIcon.ContextMenuStrip = BuildMenu();
+    oldMenu?.Dispose();
+    UpdateTrayText();
+  }
+
+  private void ShowHotkeySettings()
+  {
+    if (_editingHotkey || _exiting)
     {
-        try
-        {
-            NativeMethods.UnregisterHotKey(_messageWindow.Handle, _hotkeyId);
-        }
-        catch
-        {
-            // Ignore
-        }
-        _messageWindow?.Dispose();
-        if (_trayIcon is not null)
-        {
-            _trayIcon.Visible = false;
-            _trayIcon.Dispose();
-        }
-        base.ExitThreadCore();
+      return;
     }
 
-    private void OnHotkeyPressed(object? sender, EventArgs e)
+    _editingHotkey = true;
+    UnregisterCurrentHotkey();
+
+    if (_trayIcon?.ContextMenuStrip is { } menu)
     {
-        try
-        {
-            var rect = Screen.PrimaryScreen?.Bounds ?? Screen.AllScreens[0].Bounds;
-            int x = rect.Left + rect.Width / 2;
-            int y = rect.Top + rect.Height / 2;
-            NativeMethods.SetCursorPos(x, y);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to center mouse cursor: {ex.Message}", _title, MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
+      menu.Enabled = false;
     }
 
-    private static Icon LoadEmbeddedIconOrDefault(string fileName)
+    try
     {
-        try
+      var settings = SettingsManager.CurrentAppSettings;
+      using var dialog = new HotkeyDialog(settings.HotkeyModifiers, settings.HotkeyKey, TryApplyHotkey);
+      dialog.ShowDialog();
+    }
+    finally
+    {
+      _editingHotkey = false;
+
+      if (!_exiting)
+      {
+        if (_trayIcon?.ContextMenuStrip is { } currentMenu)
         {
-            var assembly = Assembly.GetExecutingAssembly();
-            var resourceName = Array.Find(assembly.GetManifestResourceNames(), x => x.EndsWith($".{fileName}", StringComparison.OrdinalIgnoreCase));
-            if (resourceName is null)
-            {
-                return SystemIcons.Application;
-            }
-            using var stream = assembly.GetManifestResourceStream(resourceName);
-            if (stream is null)
-            {
-                return SystemIcons.Application;
-            }
-            return new Icon(stream);
+          currentMenu.Enabled = true;
         }
-        catch
+
+        if (!_hotkeyRegistered)
         {
-            return SystemIcons.Application;
+          var settings = SettingsManager.CurrentAppSettings;
+          if (!TryRegisterHotkey(settings.HotkeyModifiers, settings.HotkeyKey))
+          {
+            ShowRegistrationError();
+          }
         }
+      }
+    }
+  }
+
+  private bool TryApplyHotkey(uint modifiers, int key)
+  {
+    if (!TryRegisterHotkey(modifiers, key))
+    {
+      MessageBox.Show(Form.ActiveForm, LocalizationManager.Get("HotkeyChangeFailed", _registrationError),
+          _title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+      return false;
     }
 
-    /// <summary>
-    /// Hidden message-only window to receive WM_HOTKEY without showing UI.
-    /// </summary>
-    private sealed class MessageWindow : NativeWindow, IDisposable
+    var updated = SettingsManager.CurrentAppSettings.Copy();
+    updated.HotkeyModifiers = modifiers;
+    updated.HotkeyKey = key;
+    if (!SettingsManager.TrySave(updated, out var error))
     {
-        public event EventHandler? HotkeyPressed;
+      UnregisterCurrentHotkey();
 
-        private static readonly IntPtr HWND_MESSAGE = new(-3);
+      MessageBox.Show(Form.ActiveForm, LocalizationManager.Get("SettingsSaveFailed", error),
+          _title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-        private const int WM_HOTKEY = 0x0312;
-
-        public MessageWindow()
-        {
-            var cp = new CreateParams
-            {
-                Caption = "havCurCtrMessageWindow",
-                Parent = HWND_MESSAGE
-            };
-            CreateHandle(cp);
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == WM_HOTKEY)
-            {
-                HotkeyPressed?.Invoke(this, EventArgs.Empty);
-            }
-            base.WndProc(ref m);
-        }
-
-        public void Dispose()
-        {
-            DestroyHandle();
-            GC.SuppressFinalize(this);
-        }
+      return false;
     }
+
+    UpdateTrayText();
+
+    return true;
+  }
+
+  private bool TryRegisterHotkey(uint modifiers, int key)
+  {
+    _hotkeyRegistered = NativeMethods.RegisterHotKey(_messageWindow.Handle, HotkeyId,
+        modifiers | MOD_NOREPEAT, (uint)key);
+    _registrationError = _hotkeyRegistered ? 0 : Marshal.GetLastWin32Error();
+
+    return _hotkeyRegistered;
+  }
+
+  private void UnregisterCurrentHotkey()
+  {
+    if (_hotkeyRegistered)
+    {
+      NativeMethods.UnregisterHotKey(_messageWindow.Handle, HotkeyId);
+      _hotkeyRegistered = false;
+    }
+  }
+
+  private void ShowRegistrationError()
+  {
+    MessageBox.Show(LocalizationManager.Get("HotkeyRegistrationFailed", _registrationError),
+        _title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+  }
+
+  private void UpdateTrayText()
+  {
+    var tooltip = $"havCurCtr | {CurrentHotkey}";
+    _trayIcon?.Text = tooltip.Length > 63 ? tooltip[..63] : tooltip;
+  }
+
+  protected override void ExitThreadCore()
+  {
+    Cleanup();
+
+    base.ExitThreadCore();
+  }
+
+  protected override void Dispose(bool disposing)
+  {
+    if (disposing)
+    {
+      Cleanup();
+    }
+
+    base.Dispose(disposing);
+  }
+
+  private void Cleanup()
+  {
+    if (_exiting)
+    {
+      return;
+    }
+
+    _exiting = true;
+    UnregisterCurrentHotkey();
+    _messageWindow.Dispose();
+
+    if (_trayIcon != null)
+    {
+      _trayIcon.Visible = false;
+      _trayIcon.ContextMenuStrip?.Dispose();
+      _trayIcon.Dispose();
+    }
+  }
+
+  private void OnHotkeyPressed(object? sender, EventArgs e)
+  {
+    if (!_hotkeyRegistered || _editingHotkey || _exiting)
+    {
+      return;
+    }
+
+    try
+    {
+      var rect = Screen.PrimaryScreen?.Bounds ?? Screen.AllScreens[0].Bounds;
+      int x = rect.Left + rect.Width / 2;
+      int y = rect.Top + rect.Height / 2;
+      NativeMethods.SetCursorPos(x, y);
+    }
+    catch (Exception ex)
+    {
+      MessageBox.Show(LocalizationManager.Get("CursorCenterFailed", ex.Message),
+          _title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+  }
+
+  private static Icon LoadEmbeddedIconOrDefault(string fileName)
+  {
+    try
+    {
+      var assembly = Assembly.GetExecutingAssembly();
+      var resourceName = Array.Find(assembly.GetManifestResourceNames(), x => x.EndsWith($".{fileName}", StringComparison.OrdinalIgnoreCase));
+      if (resourceName is null)
+      {
+        return SystemIcons.Application;
+      }
+
+      using var stream = assembly.GetManifestResourceStream(resourceName);
+      if (stream is null)
+      {
+        return SystemIcons.Application;
+      }
+
+      return new Icon(stream);
+    }
+    catch
+    {
+      return SystemIcons.Application;
+    }
+  }
+
+  /// <summary>
+  /// Hidden message-only window to receive WM_HOTKEY without showing UI.
+  /// </summary>
+  private sealed class MessageWindow : NativeWindow, IDisposable
+  {
+    public event EventHandler? HotkeyPressed;
+
+    private static readonly IntPtr HWND_MESSAGE = new(-3);
+
+    private const int WM_HOTKEY = 0x0312;
+
+    public MessageWindow()
+    {
+      var cp = new CreateParams
+      {
+        Caption = "havCurCtrMessageWindow",
+        Parent = HWND_MESSAGE
+      };
+
+      CreateHandle(cp);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+      if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HotkeyId)
+      {
+        HotkeyPressed?.Invoke(this, EventArgs.Empty);
+      }
+
+      base.WndProc(ref m);
+    }
+
+    public void Dispose()
+    {
+      DestroyHandle();
+
+      GC.SuppressFinalize(this);
+    }
+  }
 }

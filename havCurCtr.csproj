@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -11,10 +11,10 @@
     <Authors>René Nicolaus</Authors>
     <Product>havCurCtr</Product>
     <Description>Centers the mouse cursor on the primary monitor when the hotkey is pressed.</Description>
-    <Copyright>© 2025 René Nicolaus</Copyright>
-    <Version>1.0.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Copyright>© 2025-2026 René Nicolaus</Copyright>
+    <Version>1.1.0.0</Version>
+    <FileVersion>1.1.0.0</FileVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
     <NeutralLanguage>en-US</NeutralLanguage>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>false</ContinuousIntegrationBuild>
@@ -24,6 +24,15 @@
   <ItemGroup>
     <EmbeddedResource Include="havCurCtr.ico" />
     <Content Remove="havCurCtr.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="languages/en.json" LogicalName="languages.en.json" />
+    <Content Include="languages/*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
   </ItemGroup>
 
 </Project>
